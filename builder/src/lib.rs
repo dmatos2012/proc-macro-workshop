@@ -7,7 +7,7 @@ use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input, parse_str, AttrStyle, Attribute, Data, Field, FieldsNamed, GenericArgument,
-    Ident, Meta, MetaList, Path, PathArguments, Type,
+    Ident, Lit, LitStr, Meta, MetaList, Path, PathArguments, Type,
 };
 
 #[derive(Debug)]
@@ -38,7 +38,6 @@ fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
         .next();
     if let Some(attr) = maybe_attr {
         if let Meta::List(meta_list) = &attr.meta {
-            println!("Meta List");
             // get Path segment ident builder
             // get token stream with ident each
             meta_list
@@ -69,7 +68,8 @@ fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
                 .into_iter()
                 .filter_map(|token| {
                     if let TokenTree::Literal(lit) = token {
-                        Some(lit.to_string())
+                        let lit_str = syn::parse_str::<LitStr>(lit.to_string().as_str()).unwrap();
+                        Some(lit_str.value())
                     } else {
                         None
                     }
@@ -77,12 +77,6 @@ fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
                 .collect::<Vec<String>>();
             assert_eq!(builder_literal.len(), 1);
             Some(builder_literal.first().unwrap().clone())
-
-            //for token in meta_list.tokens.clone() {
-            //
-            //    dbg!(&token);
-            //}
-            // Find ident = each in the token_stream
         } else {
             None
         }
@@ -180,22 +174,40 @@ pub fn derive(input: TokenStream) -> TokenStream {
     // Current Hack: If a type signature is Option<T>, then we return whatever
     // they sent.
     // Else, we unwrap it to give `<T>` back.
-    dbg!(&struct_fields);
+    //dbg!(&struct_fields);
     let current_dir_handling = if struct_fields[3].ty.clone().to_string().contains("Option") {
         quote! {current_dir: self.current_dir.clone(),}
     } else {
         quote! {current_dir: self.current_dir.clone().unwrap_or(String::from("current_dir not set")),}
     };
-    //let field_att_builder_method
-    for struct_field in struct_fields {
-        //
-        //fn arg(&mut self, arg: String) -> &mut #builder_name {
-        //     self.arg.push(arg);
-        //    self.args = Some(self.arg);
-        //    self
-        //}
-        println!("{:?}", struct_field);
-    }
+    // Generate following code:
+    //
+    let fields_with_attrs = struct_fields
+        .iter()
+        .filter(|field| {
+            // make sure you dont generate a builder method if the attr has the same name as the
+            // field
+            field.attr.is_some() && field.attr.clone().unwrap() != field.name.clone().to_string()
+        })
+        .collect::<Vec<&StructField>>();
+
+    //for field in fields_with_attrs {
+    // you can assume the element will always be a String(for now)
+
+    let each_builder_methods = fields_with_attrs.iter().map(|field| {
+        let field_name_ident = Ident::new(field.name.as_str(), Span::call_site());
+        let field_attr_ident = Ident::new(field.attr.clone().unwrap().as_str(), Span::call_site());
+        quote! {
+            fn #field_attr_ident(&mut self, #field_attr_ident: String) -> &mut #builder_name {
+                self.#field_attr_ident.push(#field_attr_ident);
+                self.#field_name_ident = Some(self.#field_attr_ident.clone());
+                self
+            }
+        }
+    });
+    let gen_builder_methods = quote! {
+        #(#each_builder_methods)*
+    };
     let expanded = quote! {
         use std::error::Error;
         #visibility struct #builder_name {
@@ -223,11 +235,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 self
             }
 
-            fn arg(&mut self, arg: String) -> &mut #builder_name {
-                self.arg.push(arg);
-                self.args = Some(self.arg.clone());
-                self
-            }
+            #gen_builder_methods
             fn args(&mut self, args: Vec<String>) -> &mut #builder_name {
                 self.args = Some(args);
                 self
