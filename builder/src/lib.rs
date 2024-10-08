@@ -6,8 +6,10 @@ use proc_macro2::{Delimiter, Group, Punct, Spacing, TokenTree};
 use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, parse_str, AttrStyle, Attribute, Data, Field, FieldsNamed, GenericArgument,
-    Ident, Lit, LitStr, Meta, MetaList, Path, PathArguments, Type,
+    parse_macro_input, parse_str,
+    spanned::Spanned,
+    AttrStyle, Attribute, Data, Field, FieldsNamed, GenericArgument, Ident, Lit, LitStr, Meta,
+    MetaList, Path, PathArguments, Type,
 };
 
 #[derive(Debug)]
@@ -26,6 +28,53 @@ struct StructField {
     ty: Group,
     attr: Option<String>,
 }
+fn check_attr_valid(attrs: &Vec<Attribute>) -> Result<(), syn::Error> {
+    let maybe_attr = attrs
+        .iter()
+        .filter(|attr| attr.style == AttrStyle::Outer)
+        .next();
+    if let Some(attr) = maybe_attr {
+        if let Meta::List(meta_list) = &attr.meta {
+            // get Path segment ident builder
+            // get token stream with ident each
+            //dbg!(&meta_list);
+            meta_list
+                .path
+                .segments
+                .iter()
+                .find(|seg| seg.ident == "builder")
+                .expect("No builder found");
+            // make new empty span
+            meta_list
+                .tokens
+                .clone()
+                .into_iter()
+                .map(|token| {
+                    if let TokenTree::Ident(ref ident) = token {
+                        let ident_str = ident.to_string();
+                        if ident_str != "each" {
+                            // source_text shouldnt be relied on but this gives me what I want.
+                            let builder = meta_list.path.segments.span().source_text();
+                            let expected_attr_msg =
+                                format!(r#"`{}(each = "...")`"#, builder.unwrap());
+                            // new_spanned is key to getting it right, otherwise it will
+                            // just point to different parts of the span
+                            return Err(syn::Error::new_spanned(
+                                attr.meta.clone(),
+                                format!("expected {}", expected_attr_msg),
+                            ));
+                        }
+                    }
+                    Ok(())
+                })
+                .collect::<Result<(), syn::Error>>()?;
+        };
+        Ok(())
+    } else {
+        // no attribute found, thats fine
+        Ok(())
+    }
+}
 fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
     // I am looking for
     // Attr::Style::Outer
@@ -40,27 +89,6 @@ fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
         if let Meta::List(meta_list) = &attr.meta {
             // get Path segment ident builder
             // get token stream with ident each
-            meta_list
-                .path
-                .segments
-                .iter()
-                .find(|seg| seg.ident == "builder")
-                .expect("No builder found");
-            // Now that we know we have a Pathsegment builder, we proceed to find the tokens
-            //let token = meta_list.tokens.iter().find(|token| );
-            meta_list
-                .tokens
-                .clone()
-                .into_iter()
-                .find(|token| {
-                    if let TokenTree::Ident(ident) = token {
-                        ident.to_string() == "each"
-                    } else {
-                        false
-                    }
-                })
-                .expect("No each found");
-            // We have secured that there is a `builder` with `each` in the attribute
             // Now we need to find the value of the `each` attribute as a literal
             let builder_literal = meta_list
                 .tokens
@@ -102,6 +130,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 let mut field_composition = String::new();
                 let mut field_name = String::new();
                 let attrs = field.attrs;
+                let valid_atts = check_attr_valid(&attrs);
+                if let Err(e) = valid_atts {
+                    return proc_macro::TokenStream::from(e.to_compile_error());
+                }
                 let attr_literal = extract_attr_str_literal(attrs);
                 // Iteration for EACH field
                 match field.ty {
