@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(unused_variables)]
 #![allow(unused_imports)]
 use proc_macro::TokenStream;
 use proc_macro2::Span;
@@ -26,14 +27,14 @@ struct StructFields(Vec<StructField>);
 struct StructField {
     name: String,
     ty: Group,
-    attr: Option<String>,
+    attr: std::option::Option<String>,
 }
-fn check_attr_valid(attrs: &Vec<Attribute>) -> Result<(), syn::Error> {
+fn check_attr_valid(attrs: &Vec<Attribute>) -> std::result::Result<(), syn::Error> {
     let maybe_attr = attrs
         .iter()
         .filter(|attr| attr.style == AttrStyle::Outer)
         .next();
-    if let Some(attr) = maybe_attr {
+    if let std::option::Option::Some(attr) = maybe_attr {
         if let Meta::List(meta_list) = &attr.meta {
             // get Path segment ident builder
             // get token stream with ident each
@@ -67,7 +68,7 @@ fn check_attr_valid(attrs: &Vec<Attribute>) -> Result<(), syn::Error> {
                     }
                     Ok(())
                 })
-                .collect::<Result<(), syn::Error>>()?;
+                .collect::<std::result::Result<(), syn::Error>>()?;
         };
         Ok(())
     } else {
@@ -75,7 +76,7 @@ fn check_attr_valid(attrs: &Vec<Attribute>) -> Result<(), syn::Error> {
         Ok(())
     }
 }
-fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
+fn extract_attr_str_literal(attrs: Vec<Attribute>) -> std::option::Option<String> {
     // I am looking for
     // Attr::Style::Outer
     // Meta::List(MetaList) with PathSegment ident == "builder"
@@ -85,7 +86,7 @@ fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
         .iter()
         .filter(|attr| attr.style == AttrStyle::Outer)
         .next();
-    if let Some(attr) = maybe_attr {
+    if let std::option::Option::Some(attr) = maybe_attr {
         if let Meta::List(meta_list) = &attr.meta {
             // get Path segment ident builder
             // get token stream with ident each
@@ -97,19 +98,19 @@ fn extract_attr_str_literal(attrs: Vec<Attribute>) -> Option<String> {
                 .filter_map(|token| {
                     if let TokenTree::Literal(lit) = token {
                         let lit_str = syn::parse_str::<LitStr>(lit.to_string().as_str()).unwrap();
-                        Some(lit_str.value())
+                        std::option::Option::Some(lit_str.value())
                     } else {
-                        None
+                        std::option::Option::None
                     }
                 })
                 .collect::<Vec<String>>();
             assert_eq!(builder_literal.len(), 1);
-            Some(builder_literal.first().unwrap().clone())
+            std::option::Option::Some(builder_literal.first().unwrap().clone())
         } else {
-            None
+            std::option::Option::None
         }
     } else {
-        None
+        std::option::Option::None
     }
 }
 
@@ -139,7 +140,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 match field.ty {
                     Type::Path(p) => {
                         // let path = p.path;
-                        if let Some(field_ident) = field.ident {
+                        if let std::option::Option::Some(field_ident) = field.ident {
                             field_name = field_ident.to_string();
                         }
                         let segments = p.path.segments;
@@ -147,7 +148,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                             let field_type = segment.ident;
                             field_composition.push_str(field_type.to_string().as_str());
                             match segment.arguments {
-                                // Catch the 'String' in Option<String>
+                                // Catch the 'String' in std::option::Option<String>
                                 PathArguments::AngleBracketed(generic_arguments) => {
                                     // this will be repeated, but for the future
                                     // please extract it out to a function
@@ -207,13 +208,23 @@ pub fn derive(input: TokenStream) -> TokenStream {
     // they sent.
     // Else, we unwrap it to give `<T>` back.
     //dbg!(&struct_fields);
-    let current_dir_handling = if struct_fields[3].ty.clone().to_string().contains("Option") {
-        quote! {current_dir: self.current_dir.clone(),}
-    } else {
-        quote! {current_dir: self.current_dir.clone().unwrap_or(String::from("current_dir not set")),}
-    };
-    // Generate following code:
-    //
+    // find current_dir type
+    //dbg!(&struct_fields);
+    let build_method_iter = struct_fields.iter().map(|field| {
+        let expanded_name = Ident::new(field.name.clone().as_str(), Span::call_site());
+        let expanded_type = field.ty.clone();
+        if field.ty.to_string().contains("Option") {
+            quote! {
+                #expanded_name: self.#expanded_name.clone(),
+            }
+        } else {
+            quote! {
+                //#expanded_name: self.#expanded_name.clone().unwrap_or(String::from("current_dir not set")),
+                #expanded_name: self.#expanded_name.clone().unwrap(),
+            }
+        }
+    });
+    let build_method = quote! { #name {#(#build_method_iter)*}};
     let fields_with_attrs = struct_fields
         .iter()
         .filter(|field| {
@@ -223,73 +234,112 @@ pub fn derive(input: TokenStream) -> TokenStream {
         })
         .collect::<Vec<&StructField>>();
 
-    //for field in fields_with_attrs {
-    // you can assume the element will always be a String(for now)
-
-    let each_builder_methods = fields_with_attrs.iter().map(|field| {
+    let each_builder_method = struct_fields.iter().map(|field| {
+        let expanded_name = Ident::new(field.name.clone().as_str(), Span::call_site());
+        let expanded_type = field.ty.clone();
+        if expanded_type.to_string().contains("Option") {
+            quote! {
+                fn #expanded_name(&mut self, #expanded_name: String) -> &mut #builder_name {
+                    self.#expanded_name = std::option::Option::Some(#expanded_name);
+                    self
+                }
+            }
+        } else {
+            quote! {
+                fn #expanded_name(&mut self, #expanded_name: #expanded_type) -> &mut #builder_name {
+                    self.#expanded_name = std::option::Option::Some(#expanded_name);
+                    self
+                }
+            }
+        }
+    });
+    let gen_each_builder_methods = quote! {
+        #(#each_builder_method)*
+    };
+    let each_builder_att_method = fields_with_attrs.iter().map(|field| {
         let field_name_ident = Ident::new(field.name.as_str(), Span::call_site());
         let field_attr_ident = Ident::new(field.attr.clone().unwrap().as_str(), Span::call_site());
         quote! {
             fn #field_attr_ident(&mut self, #field_attr_ident: String) -> &mut #builder_name {
                 self.#field_attr_ident.push(#field_attr_ident);
-                self.#field_name_ident = Some(self.#field_attr_ident.clone());
+                self.#field_name_ident = std::option::Option::Some(self.#field_attr_ident.clone());
                 self
             }
         }
     });
-    let gen_builder_methods = quote! {
-        #(#each_builder_methods)*
+    let gen_builder_attr_methods = quote! {
+        #(#each_builder_att_method)*
     };
+    let builder_struct_fields = struct_fields.iter().map(|field| {
+        let expanded_name = Ident::new(field.name.clone().as_str(), Span::call_site());
+        let expanded_type = field.ty.clone();
+        if expanded_type.to_string().contains("Option") {
+            // this is a hack for current_dir since it always should have the signature
+            // option<string> even if its type "should" be option<option<string>>
+            quote! {
+                #expanded_name: std::option::Option<String>,
+            }
+        } else {
+            quote! {
+                #expanded_name: std::option::Option<#expanded_type>,
+            }
+        }
+    });
+    let builder_struct_fields_initial = struct_fields.iter().map(|field| {
+        let expanded_name = Ident::new(field.name.clone().as_str(), Span::call_site());
+        let expanded_type = field.ty.clone();
+        quote! {
+            #expanded_name: std::option::Option::None,
+        }
+    });
+    let builder_struct_atts = struct_fields.iter().map(|field| {
+        if field.attr.is_some() && field.attr.clone().unwrap() != field.name.clone().to_string() {
+            // For attributes, we assume that its type is always a `Vec<String>`
+            let expanded_name = Ident::new(field.attr.clone().unwrap().as_str(), Span::call_site());
+            quote! {
+                #expanded_name: Vec<String>,
+            }
+        } else {
+            quote! {}
+        }
+    });
+
+    let builder_struct_atts_initial = struct_fields.iter().map(|field| {
+        //field.attr.clone().unwrap() != field.name.clone().to_string()
+        if field.attr.is_some() && field.attr.clone().unwrap() != field.name.clone().to_string() {
+            // For attributes, we assume that its type is always a `Vec<String>`
+            let expanded_name = Ident::new(field.attr.clone().unwrap().as_str(), Span::call_site());
+            quote! {
+                #expanded_name: Vec::new(),
+            }
+        } else {
+            quote! {}
+        }
+    });
+    let builder_struct =
+        quote! {struct #builder_name {#(#builder_struct_fields)* #(#builder_struct_atts)*}};
+    let expanded_name = Ident::new(struct_fields[0].name.clone().as_str(), Span::call_site());
+    let expanded_type = struct_fields[0].ty.clone();
     let expanded = quote! {
         use std::error::Error;
-        #visibility struct #builder_name {
-            executable: Option<String>,
-            args: Option<Vec<String>>,
-            arg: Vec<String>,
-            env: Option<Vec<String>>,
-            current_dir: Option<String>,
-        }
+        #builder_struct
         impl #name {
             #visibility fn builder() -> #builder_name {
                 #builder_name {
-                    executable: None,
-                    args: None,
-                    arg: Vec::new(),
-                    env: None,
-                    current_dir: None,
+                    #(#builder_struct_fields_initial)*
+                    #(#builder_struct_atts_initial)*
                 }
             }
         }
 
         impl #builder_name {
-            fn executable(&mut self, executable: String) -> &mut #builder_name {
-                self.executable = Some(executable);
-                self
-            }
+            #gen_each_builder_methods
 
-            #gen_builder_methods
-            fn args(&mut self, args: Vec<String>) -> &mut #builder_name {
-                self.args = Some(args);
-                self
-            }
-            fn env(&mut self, env: Vec<String>) -> &mut #builder_name {
-                self.env = Some(env);
-                self
-            }
-            fn current_dir(&mut self, current_dir: String) -> &mut #builder_name {
-                self.current_dir = Some(current_dir);
-                self
-            }
-            fn build(&mut self) -> Result<#name, Box<dyn Error>> {
-                self.executable.as_ref().ok_or("executable not set")?;
-                self.args.as_ref().ok_or("args not set")?;
-                self.env.as_ref().ok_or("env not set")?;
-                let cmd = #name {executable: self.executable.clone().unwrap(),
-                    args: self.args.clone().unwrap(),
-                    env: self.env.clone().unwrap(),
-                    // current_dir: self.current_dir.clone().unwrap()};
-                    // current_dir: self.current_dir.clone()};
-                    #current_dir_handling };
+            #gen_builder_attr_methods
+
+            //}
+            fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn Error>> {
+                let cmd = #build_method;
                 Ok(cmd)
             }
 
