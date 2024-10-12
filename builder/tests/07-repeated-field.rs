@@ -45,6 +45,7 @@ fn main() {
         .executable("cargo".to_owned())
         .arg("build".to_owned())
         .arg("--release".to_owned())
+        .env(vec![])
         .build()
         .unwrap();
 
