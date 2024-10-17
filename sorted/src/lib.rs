@@ -2,16 +2,27 @@ use proc_macro::TokenStream;
 use proc_macro2::Span;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, ToTokens};
+use syn::punctuated::Punctuated;
+use syn::token::PathSep;
 use syn::visit_mut::VisitMut;
-use syn::{Ident, Pat};
+use syn::{Ident, Pat, PathSegment};
+
+#[derive(Clone, Debug)]
+struct MatchArm {
+    // The whole AST on left side of match statement.
+    // The Error::Fmt(e) in `Error::Fmt(e) => write!{...}
+    pattern_path: Punctuated<PathSegment, PathSep>,
+    // Used for sortness, so the `Error::Fmt` part.
+    combined_path: String,
+}
 
 struct MatchVisitor {
-    idents: Vec<Ident>,
+    arms: Vec<MatchArm>,
 }
 
 impl MatchVisitor {
     fn new() -> Self {
-        MatchVisitor { idents: Vec::new() }
+        MatchVisitor { arms: Vec::new() }
     }
 }
 
@@ -23,9 +34,15 @@ impl VisitMut for MatchVisitor {
         for arm in &node.arms {
             if let Pat::TupleStruct(tuple_struct) = arm.clone().pat {
                 let segments = tuple_struct.path.segments;
-                for segment in segments {
-                    self.idents.push(segment.clone().ident);
-                }
+                let combined_path: String = segments
+                    .iter()
+                    .map(|seg| seg.ident.to_string())
+                    .collect::<Vec<String>>()
+                    .join("::");
+                self.arms.push(MatchArm {
+                    pattern_path: segments,
+                    combined_path,
+                });
             }
         }
         node.attrs.clear();
@@ -33,6 +50,30 @@ impl VisitMut for MatchVisitor {
     }
 }
 
+fn check_path_segments_sorted(
+    paths_segments: &Vec<MatchArm>,
+) -> std::result::Result<(), syn::Error> {
+    let mut sorted_idents = paths_segments.clone();
+    sorted_idents.sort_by_key(|arm| arm.combined_path.clone());
+    let mut res = paths_segments
+        .into_iter()
+        .zip(sorted_idents.iter())
+        .filter(|(unsorted, sorted)| !unsorted.combined_path.eq(&sorted.combined_path));
+    // For now we only care about the first one where it isnt equal
+    // If its empty, it means its ordered correctly
+    match res.next() {
+        None => Ok(()),
+        Some((unsorted_item, sorted_item)) => Err(syn::Error::new_spanned(
+            //sorted_item.to_token_stream(),
+            sorted_item.pattern_path.to_token_stream(),
+            format!(
+                "{} should sort before {}",
+                sorted_item.combined_path, unsorted_item.combined_path,
+            ),
+        )),
+    }?;
+    Ok(())
+}
 fn check_variants_sorted(idents: &Vec<Ident>) -> std::result::Result<(), syn::Error> {
     let mut sorted_idents = idents.clone();
     sorted_idents.sort();
@@ -44,8 +85,8 @@ fn check_variants_sorted(idents: &Vec<Ident>) -> std::result::Result<(), syn::Er
     // If its empty, it means its ordered correctly
     match res.next() {
         None => Ok(()),
-        Some((unsorted_item, sorted_item)) => Err(syn::Error::new(
-            sorted_item.span(),
+        Some((unsorted_item, sorted_item)) => Err(syn::Error::new_spanned(
+            sorted_item.to_token_stream(),
             format!(
                 "{} should sort before {}",
                 sorted_item.to_string(),
@@ -84,9 +125,7 @@ fn check_enum(
     let mut match_visitor = MatchVisitor::new();
     match_visitor.visit_item_fn_mut(&mut fn_item);
     let modified_fn_item = fn_item.to_token_stream();
-    //let arm_idents = get_match_arm_idents(&input)?;
-    // I need the modified versions in both so thats why we do it like this
-    match check_variants_sorted(&match_visitor.idents) {
+    match check_path_segments_sorted(&match_visitor.arms) {
         Ok(_) => Ok((modified_fn_item, None)),
         Err(e) => Ok((modified_fn_item, Some(e))),
     }
